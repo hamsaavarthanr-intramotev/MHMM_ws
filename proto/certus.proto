@@ -1,0 +1,118 @@
+/*
+ * certus.proto
+ * Protocol Buffers for Advanced Navigation Certus GNSS/INS
+ *
+ * Architecture: one message per ANPP packet ID, one Redis channel per message.
+ * Published by certus_anpp_driver.py (Layer 3/4).
+ * Subscribed by sensor_interface.py (CertusSubscriber) to populate SensorFix.
+ *
+ * Design decision: the driver is a pure hardware translator.
+ * All field combining (e.g. body velocity + angular velocity → SensorFix) is
+ * the responsibility of sensor_interface.py, which already assembles multiple
+ * cached messages into a single SensorFix on every build_sensor_fix() call.
+ *
+ * Field types and units match ANPP packet definitions exactly.
+ * See: https://docs.advancednavigation.com/certus/ANPP/Advanced%20Navigation%20Packet.htm
+ *
+ * UNIT CONTRACT:
+ *   lat/lon published in RADIANS  — sensor_interface.py converts to degrees.
+ *   heading  published in RADIANS — sensor_interface.py converts to degrees.
+ *   angular rates in rad/s        — published as-is.
+ *   standard deviations in native units (meters or radians) — as-is.
+ *
+ * PRECISION CONTRACT: CertusLLA uses double (float64) for lat/lon/height
+ */
+
+syntax = "proto3";
+
+package certus;
+
+
+// 1. UTC Time: ANPP Packet 21 (Unix Time Packet) --> Redis channel: certus_pkt_utc_time
+message CertusTime {
+    uint32 unix_time_s      = 1;    // Unix timestamp, whole seconds since epoch
+    uint32 microseconds     = 2;    // Sub-second component, 0–999999
+}
+
+
+// 2. Geodetic Position (LLA): ANPP Packet 32 (Geodetic Position Packet) --> Redis channel: certus_pkt_lla
+message CertusLLA {
+    double latitude_rad     = 1;    // Geodetic latitude,  radians, WGS-84
+    double longitude_rad    = 2;    // Geodetic longitude, radians, WGS-84
+    double height_m         = 3;    // Height above WGS-84 ellipsoid, meters
+}
+
+
+// 3. Body Frame Velocity: ANPP Packet 36 (Body Velocity Packet) --> Redis channel: certus_pkt_body_velocity
+//    Body frame convention: X = forward, Y = right, Z = down (NED body / aerospace).
+//    Matches config.yaml imu.z_axis_down = true.
+message CertusBodyVelocity {
+    float velocity_x_mps    = 1;    // Forward velocity,  m/s  (body X)
+    float velocity_y_mps    = 2;    // Rightward velocity, m/s (body Y)
+    float velocity_z_mps    = 3;    // Downward velocity,  m/s (body Z)
+}
+
+
+// 4. Angular Velocity: ANPP Packet 42 (Angular Velocity Packet) --> Redis channel: certus_pkt_angular_velocity
+//    Z-axis: positive yaw = clockwise from above (Z-down convention).
+//    Matches config.yaml imu.z_axis_down = true.
+//    sensor_interface.py reads angular_velocity_z_rps directly as gyro_yaw_rate.
+message CertusAngularVelocity {
+    float angular_velocity_x_rps = 1;  // Roll rate,  rad/s
+    float angular_velocity_y_rps = 2;  // Pitch rate, rad/s
+    float angular_velocity_z_rps = 3;  // Yaw rate,   rad/s (positive = CW from above)
+}
+
+
+// 5. Euler Orientation: ANPP Packet 39 (Euler Orientation Packet) --> Redis channel: certus_pkt_euler_orientation
+message CertusOrientation {
+    float roll_rad          = 1;    // Roll,    radians
+    float pitch_rad         = 2;    // Pitch,   radians
+    float heading_rad       = 3;    // Heading, radians from true North, [0, 2π)
+}
+
+
+// 6. Position Standard Deviation: ANPP Packet 24 (Position Standard Deviation Packet) --> Redis channel: certus_pkt_pos_stddev
+//    1-sigma position uncertainty in each geodetic axis.
+//    sensor_interface.py computes horizontal_accuracy = sqrt(lat² + lon²).
+message CertusPositionStdDev {
+    float lat_stddev_m      = 1;    // Latitude  1-sigma, meters
+    float lon_stddev_m      = 2;    // Longitude 1-sigma, meters
+    float height_stddev_m   = 3;    // Height    1-sigma, meters
+}
+
+
+// 7. Euler Orientation Standard Deviation: ANPP Packet 26 --> Redis channel: certus_pkt_euler_stddev
+//    1-sigma orientation uncertainty.
+//    sensor_interface.py converts heading_stddev_rad to degrees for SensorFix.
+message CertusEulerStdDev {
+    float roll_stddev_rad       = 1;    // Roll    1-sigma, radians
+    float pitch_stddev_rad      = 2;    // Pitch   1-sigma, radians
+    float heading_stddev_rad    = 3;    // Heading 1-sigma, radians
+}
+
+
+// 8. System State: ANPP Packet 20 (System State Packet), status fields only --> Redis channel: certus_pkt_system_state
+//
+//    Only the two status words and derived fix type are published here.
+//    All other Packet 20 fields (position, velocity, orientation, time) are
+//    duplicated by their dedicated packets and are ignored by the driver.
+//
+//    GNSS fix type extracted from filter_status bits 4–6:
+//      mask = 0x0070, shift right 4.
+//      0=none, 1=2D, 2=3D, 3=SBAS, 4=DGNSS, 5=PPP, 6=RTK float, 7=RTK fixed
+message CertusSystemState {
+    uint32 system_status    = 1;    // 16-bit hardware health flags (ANPP docs §system_status)
+    uint32 filter_status    = 2;    // 16-bit INS filter flags     (ANPP docs §filter_status)
+    uint32 gnss_fix_type    = 3;    // 0–7, extracted from filter_status bits 4–6
+}
+
+
+// 9. Satellites: ANPP Packet 30 (Satellites Packet) --> Redis channel: certus_pkt_satellites
+//
+//    Total satellite count summed across all constellations:
+//      num_satellites = gps + glonass + beidou + galileo + sbas
+//    hdop and vdop from Packet 30 are not published — not consumed by OLE.
+message CertusSatellites {
+    uint32 num_satellites   = 1;    // Total satellites in solution (all constellations)
+}

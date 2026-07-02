@@ -1,0 +1,209 @@
+/*
+ * COMMENTS HERE!
+ */
+
+syntax = "proto3";
+
+package onboard_localization_engine;
+
+// 1. LLA Location of World Reference Frame
+message ReferenceFrameOrigin {
+    double reference_lat_deg    = 1;
+    double reference_lon_deg    = 2;
+    double reference_alt_m      = 3;        // WGS-84 ellipsoid
+}
+
+// 2. Frame of Reference for Railcar velocity (BODY/ENU/NED)
+enum VelReference {
+    BODY = 0;           // x->FORWARD, y->LEFT, z->UP
+    ENU  = 1;
+    NED  = 2;
+}
+
+// 3. GNSS Fix Type (INVALID/SSP/DGNSS/RTK_FLOAT/RTK_FIXED/DEAD_RECKON/SBAS)
+enum FixType {
+    INVALID     = 0;    // no fix
+    SPP         = 1;    // Single-Point Precision (GPS, no SBAS or RTK)
+    DGNSS       = 2;    // Differential GNSS
+    RTK_FLOAT   = 3;    // Float RTK
+    RTK_FIXED   = 4;    // Fixed RTK
+    DEAD_RECKON = 5;    // Dead reckoning only
+    SBAS        = 6;    // SBAS
+}
+
+// 4. Heading Source (UNK/TRACK_LUT/INS/FUSED)
+enum HeadingSource {
+    UNK         = 0;    // Unknown
+    TRACK_LUT   = 1;    // Track look up table
+    INS         = 2;    // From Inertian Navigation System
+    FUSED       = 3;    // GNSS/IMU Fused
+}
+
+// 5. Raircar Pose in ENU Coordinates with respect to ReferenceFrameOrigin
+message OLEPoseENU {
+    float position_x    = 1;               // [m] ENU
+    float position_y    = 2;               // [m] ENU
+    float position_z    = 3;               // [m] ENU
+    float roll          = 4;               // [radians]
+    float pitch         = 5;               // [radians]
+    float heading       = 6;               // [radians] from north
+    repeated double covariance = 7 [packed = true]; // 36 values row‑major
+}
+
+// 6. Railcar Location in LLA Geodetic Coordinates
+message OLELocLLA {
+    double latitude_deg  = 1;               // [deg] geodetic
+    double longitude_deg = 2;               // [deg] geodetic
+    double altitude_m     = 3;               // [m] height above ellipsoid   
+}
+
+// 7. Railcar linear and angular velocity with respect to VelReference
+message OLEVelocity {
+    float velocity_x = 1;               // [m/s] longterm should move to ENU fixed
+    float velocity_y = 2;               // [m/s] 
+    float velocity_z = 3;               // [m/s] 
+    float roll_rate  = 4;               // [rad/s]
+    float pitch_rate = 5;               // [rad/s]
+    float yaw_rate   = 6;               // [rad/s]
+    repeated double velocity_cov = 7 [packed = true]; // 36 values row-major 
+}
+
+// 8. Multi-Hypothesis bases State Estimation Confidence
+enum OLEConfidence {
+    HIGH      = 0;  // w_max > confidence_high   (normal autonomous operation)
+    MEDIUM    = 1;  // confidence_ambiguous < w_max <= confidence_high
+    AMBIGUOUS = 2;  // w_max <= confidence_ambiguous (reduce speed / request info)
+}
+
+// 9. Railcar State Estimation from Onboard Localization Engine
+message OLEStateEstimate {
+    int64 system_timestamp_ms       = 1;
+    int64 gps_timestamp_ms          = 2;
+    OLEPoseENU ole_pose_enu         = 3;
+    OLELocLLA ole_loc_lla           = 4;
+    FixType fix_type                = 5;
+    OLEVelocity ole_velocity        = 6;
+    uint32 num_sats                 = 7;
+    float age_of_corrections_s      = 8;    // No source for CERTUS GNSS
+    float h_accuracy_m              = 9;
+    float v_accuracy_m              = 10;
+    float heading_accuracy_rad      = 11;
+    HeadingSource heading_source    = 12;
+    VelReference vel_reference      = 13;
+    ReferenceFrameOrigin ref_origin = 14;
+    OLEConfidence ole_confidence    = 15;
+}
+
+// =============================================================================
+// 10. Furious 5 — extended railcar geometry
+// =============================================================================
+//
+// "Furious 5" identifies five physically meaningful points on the railcar that
+// downstream modules (coupling automation, platform alignment, collision
+// envelopes, etc.) need positioned independently of the single MAP pose:
+//   - Coupler Side A     (rigid offset from vehicle reference point)
+//   - Coupler Side B
+//   - Pilot Box Side A
+//   - Pilot Box Side B
+//   - Vehicle Centre     (geometric mean of the 4 surveyed corners)
+//
+// SOURCE OF TRUTH (config.yaml):
+//   8 raw body-frame-referenced LLA points are surveyed/entered once at
+//   integration time: 4 railcar corners (front-left, front-right, rear-left,
+//   rear-right), pilot_box_a, pilot_box_b, coupler_a, coupler_b.
+//   OLE derives vehicle_centre as the geometric mean (LLA-equivalent ENU
+//   centroid) of the 4 corner points. The remaining 4 Furious-5 points
+//   (coupler_a/b, pilot_box_a/b) are taken directly from their surveyed LLA
+//   entries — OLE need not re-derive them.
+//
+//   All 5 points are treated as a RIGID BODY attached to the vehicle
+//   reference point (the same point apply_antenna_offset() corrects the GNSS
+//   fix to, i.e. the track centerline / axle contact point). At publish time,
+//   OLE rotates the surveyed body-frame offset of each of the 5 points by the
+//   current fused heading and translates by the current MAP (best-hypothesis)
+//   ENU/LLA position — it does not independently re-project each point onto
+//   the track graph.
+//
+// FRAMES PER POINT:
+//   LLA      — absolute geodetic position (FuriousFivePoseLLA)
+//   ENU      — absolute local ENU position relative to ReferenceFrameOrigin
+//              (reuses OLEPoseENU; covariance left empty unless populated)
+//   Track    — (segment_id, s, d_cross) on the MAP hypothesis's segment,
+//              derived from this point's rigid-body (forward, lateral)
+//              offset relative to the MAP point. segment_id is identical across all 5 points by construction.
+message FuriousFivePoseLLA {
+    OLELocLLA coupler_a      = 1;
+    OLELocLLA coupler_b      = 2;
+    OLELocLLA pilot_box_a    = 3;
+    OLELocLLA pilot_box_b    = 4;
+    OLELocLLA vehicle_centre = 5;
+}
+
+message FuriousFivePoseENU {
+    OLEPoseENU coupler_a      = 1;
+    OLEPoseENU coupler_b      = 2;
+    OLEPoseENU pilot_box_a    = 3;
+    OLEPoseENU pilot_box_b    = 4;
+    OLEPoseENU vehicle_centre = 5;
+}
+
+// DERIVATION (no independent project_fix_to_segment() call per point):
+//   Let (fwd, lat, vert) be this point's surveyed rigid-body offset from the
+//   vehicle reference point (config.yaml furious_five: section, converted to
+//   body-frame offsets the same way apply_antenna_offset() does).
+//   Using the MAP point's track heading at (segment_id, MAP.s):
+//     s        = MAP.s + fwd        (along-track component; forward offset
+//                                     shifts position along the direction of
+//                                     travel on the same segment)
+//     d_cross  = lat                (cross-track component; lateral offset
+//                                     IS the signed perpendicular distance
+//                                     from centerline — no further rotation
+//                                     needed since lateral is already
+//                                     perpendicular-to-heading by definition)
+//   s is clamped to [0, segment.length] the same way track_to_enu() clamps;
+//   it is not re-walked across segment boundaries even if fwd is large
+//   enough to overshoot — Furious-5 offsets are expected to be on the order
+//   of vehicle length/width (single-digit metres), far short of a typical
+//   segment length. d_cross sign convention: positive = left of MAP's direction of travel,
+// negative = right
+message TrackCoordinate {
+    string segment_id = 1;    // Track segment ID (identical across all 5 points)
+    float s            = 2;    // [m] Along-track distance from first_node
+    float d_cross       = 3;    // [m] Signed cross-track distance; + = left, - = right
+}
+
+// Furious 5 in track-frame coordinates. Each point reuses the MAP
+// hypothesis's segment_id and along-track position s as its anchor — points
+// are NOT independently re-projected onto the track graph (no per-point
+// project_fix_to_segment() call), so all 5 entries always share the same
+// segment_id and are guaranteed rigid relative to one another. s and d_cross
+// are derived geometrically from each point's surveyed rigid-body offset
+// (see TrackCoordinate comment) rather than measured directly.
+message FuriousFiveTrackCoordinates {
+    TrackCoordinate coupler_a      = 1;
+    TrackCoordinate coupler_b      = 2;
+    TrackCoordinate pilot_box_a    = 3;
+    TrackCoordinate pilot_box_b    = 4;
+    TrackCoordinate vehicle_centre = 5;    // s == MAP.s, d_cross == 0 when MAP point == centroid reference
+}
+
+// 10. OLE Fully Extended State Estimation
+message OLEStateEstimateExtended {
+    int64 system_timestamp_ms              = 1;
+    int64 gps_timestamp_ms                 = 2;
+    FuriousFivePoseLLA furious_five_lla    = 3;
+    FuriousFivePoseENU furious_five_enu    = 4;
+    FuriousFiveTrackCoordinates furious_five_track = 5;
+    float along_track_std_m                = 7;    // [m] sqrt(KF position_var), MAP hypothesis
+    float horizontal_accuracy_m            = 6;    // [m] GNSS 1-sigma, fix.horizontal_accuracy
+    float vertical_accuracy_m              = 8;    // [m] Certus 1-sigma vertical accuracy
+    OLEVelocity velocity_over_ground       = 9;
+    OLEVelocity body_velocity              = 10;
+    float velocity_accuracy_mps            = 11;
+    float body_heading_rad                 = 12;   // [radians] from north
+    float heading_accuracy_rad             = 13;
+    FixType fix_type                       = 14;
+    OLEConfidence ole_confidence           = 15;
+    ReferenceFrameOrigin ref_origin        = 16;
+    uint32 num_sats                        = 17;
+}

@@ -1,0 +1,127 @@
+/*
+ * COMMENTS HERE!
+ */
+
+syntax = "proto3";
+
+package onboard_localization_engine;
+
+// 1. LLA Location of World Reference Frame
+message ReferenceFrameOrigin {
+    double reference_lat_deg    = 1;
+    double reference_lon_deg    = 2;
+    double reference_alt_m      = 3;        // WGS-84 ellipsoid
+}
+
+// 2. Frame of Reference for Railcar velocity (BODY/ENU/NED)
+enum VelReference {
+    BODY = 0;           // x->FORWARD, y->LEFT, z->UP
+    ENU  = 1;
+    NED  = 2;
+}
+
+// 3. GNSS Fix Type (INVALID/SSP/DGNSS/RTK_FLOAT/RTK_FIXED/DEAD_RECKON/SBAS)
+enum FixType {
+    INVALID     = 0;    // no fix
+    SPP         = 1;    // Single-Point Precision (GPS, no SBAS or RTK)
+    DGNSS       = 2;    // Differential GNSS
+    RTK_FLOAT   = 3;    // Float RTK
+    RTK_FIXED   = 4;    // Fixed RTK
+    DEAD_RECKON = 5;    // Dead reckoning only
+    SBAS        = 6;    // SBAS
+}
+
+// 4. Heading Source (UNK/TRACK_LUT/INS/FUSED)
+enum HeadingSource {
+    UNK         = 0;    // Unknown
+    TRACK_LUT   = 1;    // Track look up table
+    INS         = 2;    // From Inertian Navigation System
+    FUSED       = 3;    // GNSS/IMU Fused
+}
+
+// 5. Raircar Pose in ENU Coordinates with respect to ReferenceFrameOrigin
+message OLEPoseENU {
+    float position_x    = 1;               // [m] ENU
+    float position_y    = 2;               // [m] ENU
+    float position_z    = 3;               // [m] ENU
+    float roll          = 4;               // [radians]
+    float pitch         = 5;               // [radians]
+    float heading       = 6;               // [radians] from north
+    repeated double covariance = 7 [packed = true]; // 36 values row‑major
+}
+
+// 6. Railcar Location in LLA Geodetic Coordinates
+message OLELocLLA {
+    double latitude_deg  = 1;               // [deg] geodetic
+    double longitude_deg = 2;               // [deg] geodetic
+    double altitude_m     = 3;               // [m] height above ellipsoid   
+}
+
+// 7. Railcar linear and angular velocity with respect to VelReference
+message OLEVelocity {
+    float velocity_x = 1;               // [m/s] longterm should move to ENU fixed
+    float velocity_y = 2;               // [m/s] 
+    float velocity_z = 3;               // [m/s] 
+    float roll_rate  = 4;               // [rad/s]
+    float pitch_rate = 5;               // [rad/s]
+    float yaw_rate   = 6;               // [rad/s]
+    repeated double velocity_cov = 7 [packed = true]; // 36 values row-major 
+}
+
+// 8. Multi-Hypothesis bases State Estimation Confidence
+enum OLEConfidence {
+    HIGH      = 0;  // w_max > confidence_high   (normal autonomous operation)
+    MEDIUM    = 1;  // confidence_ambiguous < w_max <= confidence_high
+    AMBIGUOUS = 2;  // w_max <= confidence_ambiguous (reduce speed / request info)
+}
+
+// 9. Railcar State Estimation from Onboard Localization Engine
+message OLEStateEstimate {
+    int64 system_timestamp_ms       = 1;
+    int64 gps_timestamp_ms          = 2;
+    OLEPoseENU ole_pose_enu         = 3;
+    OLELocLLA ole_loc_lla           = 4;
+    FixType fix_type                = 5;
+    OLEVelocity ole_velocity        = 6;
+    uint32 num_sats                 = 7;
+    float age_of_corrections_s      = 8;    // No source for CERTUS GNSS
+    float h_accuracy_m              = 9;
+    float v_accuracy_m              = 10;
+    float heading_accuracy_rad      = 11;
+    HeadingSource heading_source    = 12;
+    VelReference vel_reference      = 13;
+    ReferenceFrameOrigin ref_origin = 14;
+    OLEConfidence ole_confidence    = 15;
+}
+
+// Furious 5 (2 couplers, 2 pilot boxes, vehicle center) in LLA
+// Coupler Side A
+// Coupler Side B
+// Pilot Box Side A
+// Pilot Box Side B
+// Vehicle Centre 
+
+// Furious 5 (2 couplers, 2 pilot boxes, vehicle center) in ENU
+// Coupler Side A
+// Coupler Side B
+// Pilot Box Side A
+// Pilot Box Side B
+// Vehicle Centre 
+
+// Furious 5 (2 couplers, 2 pilot boxes, vehicle center) in Trackfie Coordinates
+// Coupler Side A
+// Coupler Side B
+// Pilot Box Side A
+// Pilot Box Side B
+// Vehicle Centre 
+
+
+// 10. OLE Fully Extended State Estimation
+message OLEStateEstimateExtended {
+    int64 system_timestamp_ms = 1;
+    int64 gps_timestamp_ms = 2;
+    
+
+}
+
+
