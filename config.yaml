@@ -1,0 +1,385 @@
+# =============================================================================
+# Onboard Localization Engine — Configuration
+# =============================================================================
+# This file holds all deployment-specific and hardware-specific parameters.
+# The TrackMapEngine reads this at init. Never hardcode these values in code.
+#
+# SIGN CONTRACT (read before touching curvature or heading anywhere):
+#   All geometric quantities (s, curvature profile, heading) are parameterized
+#   in the first_node → last_node direction (stored point order).
+#
+#   No runtime sign flip is applied. The KF velocity sign resolves direction:
+#     positive velocity = moving toward last_node ("nominal")
+#     negative velocity = moving toward first_node ("reverse")
+#   omega_expected = velocity × kappa handles sign automatically.
+#
+#   direction_qualifier is a RUNTIME parameter ("nominal" or "reverse") derived
+#   from KF velocity by the OLE integration module with hysteresis.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Track Map Engine
+# -----------------------------------------------------------------------------
+reference:
+  # Local ENU origin — all ENU coordinates are relative to this point.
+  # ENU(0, 0, 0) corresponds to this LLA position.
+
+  # # Carmeuse Referece Origin
+  # lat: 46.00290        # degrees, WGS84
+  # lon: -84.28256        # degrees, WGS84
+  # alt: 188.9        # meters, WGS84 ellipsoidal height
+
+  # # Back Parking Lot Track (RTK Base Station) Reference Origin
+  # lat: 38.68682428 # 38.686817330556
+  # lon: -90.25646383 # -90.2564524
+  # alt: 120.909
+
+  # Watco Reference Origin
+  lat: 38.870596581 # degrees, WGS84
+  lon: -90.106401011 # degrees, WGS84
+  alt: 98.897 # meters, WGS84 ellipsoidal height
+
+imu:
+  # Z-axis orientation of the IMU as physically mounted on the railcar.
+  # This determines the sign convention of the yaw rate output (ω_sensor).
+  #
+  # z_axis_down: true  → IMU z-axis points DOWN (aerospace/NED convention)
+  #                       right-hand turn (clockwise from above) = POSITIVE ω
+  # z_axis_down: false → IMU z-axis points UP (ENU convention)
+  #                       left-hand turn (counterclockwise from above) = POSITIVE ω
+  #
+  # CHECK THIS AGAINST YOUR IMU DATASHEET before first run.
+  # Incorrect setting will flip the sign of all curvature residuals.
+  z_axis_down: true # Certus IMU is mounted with z-axis down (NED convention).
+
+min_search_radius_m: 5.0 # floor on R-tree search radius regardless of GNSS accuracy.
+
+heading_smoothing_chords: 3
+# Number of terminal track chords (nearest to the switch node) used to compute
+# the weighted circular-mean heading for approach/departure angle filtering.
+# Each chord is weighted by its length; the circular mean handles ±π wraparound.
+# Higher values reduce sensitivity to individual noisy survey points but may
+# pull the heading estimate away from the true terminal geometry if the track
+# curves near the switch. Range: 2-5. Default 3 is a reasonable starting point
+# for RTK-surveyed tracks with ~0.3-1.0m point spacing.
+
+# -----------------------------------------------------------------------------
+# Sensor Interface
+# -----------------------------------------------------------------------------
+antenna:
+  # GNSS antenna offset from the vehicle reference point (track centerline / axle center).
+  # Expressed in the vehicle body frame:
+  #   forward_m  — positive toward the front of the vehicle (along travel direction)
+  #   lateral_m  — positive toward the left of the vehicle (perpendicular to travel)
+  #   vertical_m — positive upward
+  #
+  # The corrected position represents the track centerline contact point, which is
+  # what the map-matching engine projects onto segment geometry.
+  #
+  # Correction is applied using the GNSS-reported heading, so heading accuracy
+  # directly affects the quality of the lateral correction. For large lateral
+  # offsets on straight track, verify heading_accuracy is acceptable.
+  #
+  # Set all to 0.0 if the antenna is already centered over the track axle,
+  # or to leave correction disabled during initial testing.
+
+  # # Carmeuse CAR1A Antenna Offset
+  # forward_m: 13.6424   # meters, positive = toward front
+  # lateral_m: 0.9398   # meters, positive = toward left
+  # vertical_m: 2.9700  # meters, positive = upward
+
+  # Certus Antenna Offset for Back Parking Lot Track (possibly from the software)
+  forward_m: 0.0
+  lateral_m: 0.0
+  vertical_m: 0.0
+
+# -----------------------------------------------------------------------------
+# Certus hardware — ANPP driver connection
+# -----------------------------------------------------------------------------
+# Connection parameters for certus_anpp_driver.py (Layer 1 TCP receiver).
+# These are the Certus device's network address, NOT the Redis address.
+#
+# Default ANPP TCP port for Advanced Navigation devices is 16718.
+# Set host to the static IP assigned to the Certus on the railcar network.
+
+certus:
+  host: "192.168.2.1"   # Certus device IP address — update for deployment
+  port: 16718           # ANPP TCP port (Advanced Navigation default)
+
+# -----------------------------------------------------------------------------
+# Redis — connection and channel configuration
+# -----------------------------------------------------------------------------
+# Channel names are the single source of truth for the driver ↔ OLE interface.
+# certus_anpp_driver.py publishes to the certus_pkt_* channels.
+# sensor_interface.py subscribes to the same certus_pkt_* channels.
+# If channel names ever change, update HERE only — never in code.
+#
+# Architecture: one channel per ANPP packet ID (one-to-one mapping).
+# sensor_interface.py combines fields from multiple channels into SensorFix.
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+
+  # --- Certus ANPP driver publish channels (driver → OLE sensor_interface) ---
+  # Each key corresponds to exactly one ANPP packet ID and one proto message.
+  # See certus.proto for message definitions and field layouts.
+
+  # Packet 21 — Unix Time → CertusTime
+  subscribe_channel_certus_utc_time:        "certus_pkt_utc_time"
+
+  # Packet 32 — Geodetic Position → CertusLLA
+  subscribe_channel_certus_lla:             "certus_pkt_lla"
+
+  # Packet 36 — Body Velocity → CertusBodyVelocity
+  subscribe_channel_certus_body_velocity:   "certus_pkt_body_velocity"
+
+  # Packet 42 — Angular Velocity → CertusAngularVelocity
+  subscribe_channel_certus_angular_velocity: "certus_pkt_angular_velocity"
+
+  # Packet 39 — Euler Orientation → CertusOrientation
+  subscribe_channel_certus_euler_orientation: "certus_pkt_euler_orientation"
+
+  # Packet 24 — Position StdDev → CertusPositionStdDev
+  subscribe_channel_certus_pos_stddev:      "certus_pkt_pos_stddev"
+
+  # Packet 26 — Euler StdDev → CertusEulerStdDev
+  subscribe_channel_certus_euler_stddev:    "certus_pkt_euler_stddev"
+
+  # Packet 20 — System State (status fields only) → CertusSystemState
+  subscribe_channel_certus_system_state:    "certus_pkt_system_state"
+
+  # Packet 30 — Satellites → CertusSatellites
+  subscribe_channel_certus_satellites:      "certus_pkt_satellites"
+
+  # --- OLE publish channels (OLE → downstream consumers) ---
+  publish_channel_full_state_estimate: "ole_state_estimate"
+
+  # NOTE:DEBUG
+  publish_channel_hypotheses_debug: "ole_hypotheses_debug"
+
+# -----------------------------------------------------------------------------
+# Kalman Filter
+# -----------------------------------------------------------------------------
+# Govern the 1D CV Kalman filter embedded in each MHMM hypothesis.
+# Loaded via KFConfig.from_config(). Tuned against real GPS data using
+# the innovation stats diagnostic (get_innovation_stats()).
+#
+# TUNING WORKFLOW:
+#   1. Run KF over GPS data, inspect innovation mean and variance.
+#   2. Innovation mean ~= 0, variance ~= 1 (normalised) = healthy filter.
+#   3. Mean drifts      -> map error or wrong segment.
+#      Variance >> 1    -> increase q or default_measurement_noise.
+#      Variance << 1    -> decrease q or default_measurement_noise.
+#   4. Gate threshold: widen if legitimate fixes are being rejected.
+
+kalman_filter:
+  process_noise_density: 1.0
+  # q (m^2/s^3) — variance of unmodelled acceleration per unit time.
+  # Models how much railcar acceleration deviates from zero (CV assumption).
+  # Typical range: 0.5-2.0. Start at 1.0, tune via innovation variance.
+
+  default_measurement_noise: 2.5
+  # Fallback sigma_pos (m) used as R = sigma^2 when SensorFix does not
+  # report horizontal_accuracy. Set to typical GNSS accuracy for this site.
+  # Replaced fix-by-fix by fix.horizontal_accuracy when available.
+
+  initial_position_variance: 9.0
+  # P_init[0,0] (m^2) — position uncertainty at cold start.
+  # sqrt(9.0) = 3m, matching typical GNSS horizontal accuracy.
+  # Reduce if cold-start fix quality is consistently better.
+
+  initial_velocity_variance: 100.0
+  # P_init[1,1] ((m/s)^2) — velocity uncertainty at cold start.
+  # sqrt(100) = 10 m/s — reflects complete ignorance of initial velocity.
+  # KF converges to true velocity within a few fixes once moving.
+
+  gate_threshold: 5.0
+  # Measurement gating threshold in sigma units.
+  # Rejects update if |y| / sqrt(S) > gate_threshold.
+  # Protects against GNSS multipath spikes and outlier fixes.
+  # Typical range: 3.0-5.0 sigma. Widen if legitimate fixes are rejected.
+
+  min_dt: 0.01
+  # Minimum accepted dt (seconds). Rejects duplicate or near-duplicate
+  # timestamps from the sensor interface to avoid degenerate Q matrices.
+
+  max_dt: 10.0
+  # Maximum accepted dt (seconds). Rejects stale predictions after
+  # prolonged GNSS dropout where dead-reckoning is no longer reliable.
+
+  # -------------------------------------------------------------------------
+  # Observation Likelihood
+  # -------------------------------------------------------------------------
+  sigma_gyro: 0.005
+  # Hardware angular rate noise floor (rad/s), 1-sigma.
+  # SOURCE: IMU datasheet — do not tune, this is a physical constant.
+  # Certus Rugged: gyroscope in-run bias instability ~0.005 rad/s (1-sigma).
+  # If using a different IMU, update from the "angular rate noise density" or
+  # "in-run bias instability" spec. This sets the irreducible floor for L_curv.
+
+  sigma_kappa_map: 0.002
+  # Map curvature uncertainty (1/m), 1-sigma.
+  # Reflects RTK survey point spacing and polyline chord approximation error.
+  # At velocity v (m/s), contributes sigma_kappa_map × v (rad/s) to the
+  # omega residual uncertainty — correctly captures that faster motion
+  # amplifies map curvature errors into larger yaw rate errors.
+  #
+  # Derived from RTK survey quality (0.012m RMS, ~0.5m point spacing):
+  #   chord curvature error ≈ 8 × point_error / chord_length²
+  #                         ≈ 8 × 0.012 / 0.5² ≈ 0.38 1/m  (per chord)
+  # After smoothing over heading_smoothing_chords=3, this drops ~√3:
+  #   sigma_kappa_map ≈ 0.002 1/m
+  # Tune upward if omega residuals on known-straight track exceed sigma_gyro.
+
+  sigma_map: 0.5
+  # Irreducible positional uncertainty from track map quality (m).
+  # Accounts for polyline discretisation error between survey points,
+  # systematic survey bias, and residual antenna offset calibration error.
+  #
+  # Used in the three-term RSS formula in compute_likelihood():
+  #   sigma_pos_effective = sqrt(sigma_gnss² + sigma_map² + P_pos)
+  # where P_pos is the KF position variance (self-regulating: large at cold
+  # start, negligible after convergence). sigma_map is the static floor only.
+  #
+  # Calibrate from empirical d_cross distribution on known-good track data
+  # collected with the antenna correctly offset-corrected and the KF converged.
+  # Reduce if map is upgraded to centimeter-level LiDAR survey.
+  
+  # -------------------------------------------------------------------------
+  # MHMM Orchestrator
+  # -------------------------------------------------------------------------
+
+  d_decision: 150.0
+  # Distance from a switch node (m) within which curvature scoring
+  # activates: L_total = L_pos x L_curv. Typical range: 100-200 m.
+
+  prune_threshold: 0.02
+  # Minimum hypothesis weight below which a hypothesis is pruned.
+  # Typical range: 0.01-0.05. Grace distance respected near switches.
+
+  grace_distance: 150.0
+  # Along-track distance (m) a new hypothesis must travel from its entry
+  # position before it becomes eligible for pruning (Stage 1 grace window).
+  # Applies uniformly to ALL new hypotheses:
+  #   Cold-start: measured from s_proj at the first fix.
+  #   Switch-spawn: measured from the overshoot position past the switch node.
+  # Both are new entrants to the system and receive the same geometric grace.
+  # Tune to the minimum track distance the vehicle must travel before a
+  # wrong-segment hypothesis becomes clearly distinguishable. For a 150m
+  # grace window at 0.9 m/s the protection lasts ~167 s from entry.
+
+  merge_distance: 5.0
+  # Along-track distance (m) within which two hypotheses on the same
+  # segment are merged (weights summed, states averaged).
+
+  max_hypotheses: 15
+  # Hard cap on active hypothesis count. Typical range: 10-15.
+
+  confidence_high: 0.98
+  # Weight threshold for HIGH confidence output. Typical range: 0.90-0.99.
+
+  confidence_ambiguous: 0.60
+  # Weight threshold below which output is AMBIGUOUS. Typical range: 0.50-0.70.
+  # MEDIUM is implicitly: confidence_ambiguous < w_max <= confidence_high.
+
+  approach_angle_threshold: 90.0
+  # Maximum angular difference (degrees) between the current segment's approach
+  # heading and a candidate segment's departure heading for a segment transition
+  # to be considered geometrically valid at a node. Used by
+  # _filter_by_approach_angle() in the orchestrator to eliminate geometrically
+  # impossible branches at undirected switches. Typical range: 45.0-135.0.
+
+  direction_hysteresis_threshold: 0.3
+  # KF velocity hysteresis band (m/s). Prevents rapid direction_qualifier
+  # toggling near zero speed.
+  # direction_qualifier: "nominal" when v > +threshold, "reverse" when v < -threshold,
+  #   retained otherwise. Defaults to "unknown" at cold start (no hypotheses yet).
+  # direction_of_movement: "forward" when body_vel > +threshold, "reverse" when
+  #   body_vel < -threshold, "neutral" otherwise or when fix.velocity is None.
+  # Typical range: 0.2-0.5 m/s.
+  # NOTE: direction_qualifier also acts as the velocity gate for L_head —
+  # L_head only activates when dq != "unknown", i.e. when velocity has cleared
+  # this threshold. No separate heading_velocity_gate is needed.
+
+  # -------------------------------------------------------------------------
+  # Observation Likelihood — sensor term enables
+  # -------------------------------------------------------------------------
+
+  enable_heading: true
+  # Activate heading likelihood (L_head) scoring.
+  # L_head compares the Certus dual-antenna heading against the expected track
+  # heading at the projected hypothesis position. Gate: direction_qualifier != "unknown".
+  # Direction-aware: expected heading flipped by π for reverse travel.
+  # Set false to run L_pos-only (baseline mode).
+
+  sigma_heading: 0.0262
+  # Base map heading uncertainty (radians, 1-sigma). 0.0262 rad ≈ 1.5°.
+  # Represents irreducible heading error from track survey geometry and polyline
+  # chord approximation. Combined with fix.heading_accuracy via RSS:
+  #   sigma_heading_eff = sqrt(sigma_heading² + radians(heading_accuracy)²)
+  # Empirical residual std from Watco RTK-FLOAT runs: ~1.38° (mean=-0.56°).
+  # 1.5° provides conservative margin above the measured spread.
+  # Reduce toward 1.0° (0.0175 rad) if heading residuals tighten with RTK-FIXED.
+
+  enable_curvature: false
+  # Activate curvature likelihood (L_curv) scoring.
+  # L_curv compares gyro_z against v × κ_map within the decision area.
+  # Currently disabled: Menger curvature is sensitive to single-point RTK survey
+  # noise at ~1m point spacing, producing phantom kappa spikes (e.g. R=11.8m
+  # at s=19-20m on S28) that are uncorrelated with the measured yaw rate
+  # (Pearson r=0.15 on Watco runs). Re-enable after trackfile smoothing or
+  # if deployed on a site with denser RTK survey (sub-0.5m point spacing).
+
+  heading_smoothing: false
+  # When true, get_heading() uses chord-length-weighted circular mean over
+  # heading_smoothing_chords nearest chords (same method as terminal heading
+  # at switch nodes) instead of raw two-chord linear interpolation.
+
+  # -------------------------------------------------------------------------
+  # Confidence Integrity
+  # -------------------------------------------------------------------------
+
+  integrity_chi2_confidence: 0.999
+  # Chi-squared quantile used for the per-hypothesis consistency gate (Approach A).
+  # A hypothesis whose d2_total = (d_cross/sigma_eff)² + (omega_res/sigma_omega)²
+  # exceeds this threshold is integrity-blocked from HIGH confidence.
+  #   p=0.999 → dof=1 threshold=10.828, dof=2 threshold=13.816
+  # Threshold is derived from the chi-squared distribution — not a tuned scalar.
+  # The S28 false-HIGH case produced d2_pos=73.5, which fails at any p>0.99.
+  # Increase p (e.g. 0.9999) to tighten; decrease (e.g. 0.99) to loosen.
+
+  llr_null_sigma_offtrack: 5.0
+  # Sigma (m) of the off-track null position model for LLR integrity (Approach B).
+  # Represents "the railcar is not reliably on any mapped segment."
+  # LLR_null = log(L_total_best / L_null). Positive LLR_null → track fits better
+  # than null. Negative → integrity failure, forced AMBIGUOUS.
+  # Set to roughly half the typical inter-track separation at the deployment site.
+  # Watco yard: ~3–5 m between parallel tracks → 5.0 m is conservative.
+  # Reduce to tighten the null model on sites with tighter track spacing.
+
+  llr_sep_threshold: 2.0
+  # Minimum log-likelihood ratio between best and second-best hypothesis
+  # for HIGH confidence (discrimination gate, Approach B).
+  # LLR_sep=2.0 → best hypothesis is e²≈7.4× more likely than second-best.
+  # Vacuously satisfied (inf) when only one hypothesis is active.
+  # Increase to require stronger separation before committing to HIGH.
+  # Decrease to allow HIGH on weaker separation (not recommended for safety).
+
+# -----------------------------------------------------------------------------
+# OLE Integration Module
+# -----------------------------------------------------------------------------
+ole:
+  gnss_timeout_s: 5.0
+  # Seconds without a valid GNSS fix before WARNING logged.
+  # Certus handles dead-reckoning internally; this flags fix freshness degradation.
+
+  max_init_failures: 5
+  # Consecutive failed initialisations before entering off-map cooldown.
+  # Resolves Issue 1 (infinite reinitialisation loop on off-map fix).
+
+  init_cooldown_interval_s: 5.0
+  # Seconds between retry attempts during off-map cooldown.
+  # Prevents spamming initialise() at GNSS rate when off-map.
+  
